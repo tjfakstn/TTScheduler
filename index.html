@@ -197,6 +197,8 @@ dialog .dsub { color: var(--muted); font-size: 0.85rem; margin-top: 2px; }
 .plist { display: grid; gap: 2px; margin: 12px 0; max-height: 50vh; overflow-y: auto; }
 .plist label { display: flex; gap: 8px; align-items: center; padding: 6px 4px; border-radius: 6px; color: var(--ink); font-size: 0.92rem; }
 .plist label:hover { background: var(--sunk); }
+.plist label.blocked { color: var(--muted); cursor: not-allowed; }
+.plist label.blocked:hover { background: transparent; }
 .plist .tag { margin-left: auto; font-size: 0.75rem; color: var(--muted); }
 .plist .tag.bad { color: var(--warn); }
 .plist .ld { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted); margin-left: auto; }
@@ -344,7 +346,7 @@ dialog .dsub { color: var(--muted); font-size: 0.85rem; margin-top: 2px; }
 <dialog id="itemDlg">
   <form method="dialog">
     <h3 id="itemTitle"></h3>
-    <p class="dsub">체크한 사람은 이 항목에 고정돼서 다른 항목에는 자동으로 들어가지 않아요. 한 사람을 여러 항목에 체크하면 그 항목들 사이에서만 움직여요.</p>
+    <p class="dsub">체크한 사람은 이 항목에 고정돼서 다른 항목에는 들어가지 않아요. 근무표 칸을 직접 바꿀 때도 마찬가지예요. 한 사람을 여러 항목에 체크하면 그 항목들 사이에서만 움직여요.</p>
     <label class="check" style="margin-top:12px"><input type="checkbox" id="itemClosed"> 전용: 고정한 사람만 이 항목에 들어감</label>
     <input type="search" id="itemSearch" placeholder="이름 찾기" aria-label="이름 찾기" style="width:100%;margin-top:10px">
     <div class="plist" id="itemList"></div>
@@ -1119,20 +1121,21 @@ function openCell(k) {
   state.settings.items.forEach((x, jj) => { if (jj !== j) (state.assign[keyOf(d, i, jj)] || []).forEach(id => others[id] = x.name); });
   // 지금 들어간 사람 → 비어 있는 사람(근무 적은 순) → 다른 항목에 있는 사람 → 수업 있는 사람
   const { cnt } = loadCounts();
-  const groups = [['지금 배치됨', []], ['가능 · 근무 적은 순', []], ['같은 시간 다른 항목에 있음', []], ['다른 항목 담당 (고정)', []], ['수업 있음', []]];
+  const groups = [['지금 배치됨', []], ['가능 · 근무 적은 순', []], ['같은 시간 다른 항목에 있음', []], ['수업 있음', []], ['다른 항목 담당이라 넣을 수 없음', []]];
   const itemName = id => state.settings.items.find(x => x.id === id)?.name || '';
   for (const p of state.people.filter(x => x.include)) {
-    const g = cur.includes(p.id) ? 0 : !isFree(p, d, sl.s, sl.e) ? 4 : !canWork(p, j) ? 3 : others[p.id] ? 2 : 1;
+    // 다른 항목에 고정된 사람(또는 전용 항목의 비담당자)은 직접 수정으로도 넣지 못한다
+    const g = !canWork(p, j) ? 4 : cur.includes(p.id) ? 0 : !isFree(p, d, sl.s, sl.e) ? 3 : others[p.id] ? 2 : 1;
     groups[g][1].push(p);
   }
   groups[1][1].sort((a, b) => cnt[a.id] - cnt[b.id]);
   $('#cellList').innerHTML = groups.filter(g => g[1].length).map(([title, list]) =>
     `<div class="grp">${title}</div>` + list.map(p => {
-      const free = isFree(p, d, sl.s, sl.e), fx = fixedOf(p);
-      const tag = !free ? '<span class="tag bad">수업 있음</span>'
-        : !canWork(p, j) ? `<span class="tag bad">${esc(fx.length ? fx.map(itemName).join('·') + ' 고정' : '전용 항목')}</span>`
+      const free = isFree(p, d, sl.s, sl.e), fx = fixedOf(p), blocked = !canWork(p, j);
+      const tag = blocked ? `<span class="tag">${esc(fx.length ? fx.map(itemName).join('·') + ' 담당' : `${it.name} 담당 아님`)}</span>`
+        : !free ? '<span class="tag bad">수업 있음</span>'
         : others[p.id] ? `<span class="tag">${esc(others[p.id])}</span>` : '';
-      return `<label data-name="${esc(p.name || '')}"><input type="checkbox" value="${p.id}" ${cur.includes(p.id) ? 'checked' : ''}> ${esc(p.name || '이름 없음')} <span class="ld">${cnt[p.id] || 0}타임</span>${tag}</label>`;
+      return `<label data-name="${esc(p.name || '')}" class="${blocked ? 'blocked' : ''}"><input type="checkbox" value="${p.id}" ${!blocked && cur.includes(p.id) ? 'checked' : ''} ${blocked ? 'disabled' : ''}> ${esc(p.name || '이름 없음')} <span class="ld">${cnt[p.id] || 0}타임</span>${tag}</label>`;
     }).join('')).join('');
   $('#cellSearch').value = '';
   $('#cellDlg').showModal();
@@ -1147,8 +1150,9 @@ $('#tables').addEventListener('click', e => { const td = e.target.closest('td.ce
 $('#tables').addEventListener('keydown', e => { const td = e.target.closest('td.cell'); if (td && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openCell(td.dataset.k); } });
 $('#cellDlg').addEventListener('close', () => {
   if ($('#cellDlg').returnValue !== 'ok' || !editKey) return;
-  const ids = [...document.querySelectorAll('#cellList input:checked')].map(i => i.value);
-  const [d, i] = editKey.split('|');
+  const [d, i, j] = editKey.split('|');
+  const ids = [...document.querySelectorAll('#cellList input:checked')].map(x => x.value)
+    .filter(id => { const p = state.people.find(x => x.id === id); return p && canWork(p, +j); });
   // 같은 타임 다른 항목에서는 빼서 한 사람이 두 곳에 있지 않게 한다
   state.settings.items.forEach((_, jj) => { const k2 = `${d}|${i}|${jj}`; if (k2 !== editKey && state.assign[k2]) state.assign[k2] = state.assign[k2].filter(id => !ids.includes(id)); });
   state.assign[editKey] = ids; drawResult(); save(); toast('바꿨어요');
